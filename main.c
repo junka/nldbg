@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <stdint.h>
 #include <assert.h>
+#include <string.h>
 
 #include <signal.h>
 #include <sys/epoll.h>
@@ -21,12 +22,6 @@
 
 #include "nltrace.h"
 
-static int
-print_info_data_attr(const struct nlattr *a, void *data)
-{
-
-	return 0;
-}
 
 static int
 print_info_slave_data_attr(const struct nlattr *a, void *data)
@@ -76,6 +71,110 @@ print_info_slave_data_attr(const struct nlattr *a, void *data)
 	return 0;
 }
 
+static int 
+driver_kind(const char *type)
+{
+	const char *kinds[] = {
+		"bridge",
+		"tun",
+		"bond",
+	};
+	for (size_t i = 0; i < MNL_ARRAY_SIZE(kinds); i ++) {
+		if (!strcmp(kinds[i], type)) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+static int
+print_info_data_attr(const struct nlattr *a, int driver_type, void *data)
+{
+	if (driver_type == -1) {
+		printf("invalid driver kind type");
+	}
+	int type = mnl_attr_get_type(a);
+	if (driver_type == 0) {
+		static char *brinfo[] = {
+#define _(a) #a
+			BRIDGE_INFO_ENUM
+#undef _
+		};
+		struct ifla_bridge_id *id;
+		// struct br_boolopt_multi *multi;
+		uint8_t *addr;
+		printf("{nla_len=%d, nla_type=%s, ", mnl_attr_get_len(a), brinfo[type]);
+		switch(type) {
+			case IFLA_BR_HELLO_TIMER:
+			case IFLA_BR_TCN_TIMER:
+			case IFLA_BR_TOPOLOGY_CHANGE_TIMER:
+			case IFLA_BR_GC_TIMER:
+			case IFLA_BR_MCAST_LAST_MEMBER_INTVL:
+			case IFLA_BR_MCAST_MEMBERSHIP_INTVL:
+			case IFLA_BR_MCAST_QUERIER_INTVL:
+			case IFLA_BR_MCAST_QUERY_INTVL:
+			case IFLA_BR_MCAST_QUERY_RESPONSE_INTVL:
+			case IFLA_BR_MCAST_STARTUP_QUERY_INTVL:
+				printf("%lu}", mnl_attr_get_u64(a));
+				break;
+			case IFLA_BR_FORWARD_DELAY:
+			case IFLA_BR_HELLO_TIME:
+			case IFLA_BR_MAX_AGE:
+			case IFLA_BR_AGEING_TIME:
+			case IFLA_BR_STP_STATE:
+			case IFLA_BR_ROOT_PATH_COST:
+			case IFLA_BR_MCAST_HASH_ELASTICITY:
+			case IFLA_BR_MCAST_HASH_MAX:
+			case IFLA_BR_MCAST_LAST_MEMBER_CNT:
+			case IFLA_BR_MCAST_STARTUP_QUERY_CNT:
+				printf("%u}", mnl_attr_get_u32(a));
+				break;
+			case IFLA_BR_PRIORITY:
+			case IFLA_BR_VLAN_PROTOCOL:
+			case IFLA_BR_VLAN_DEFAULT_PVID:
+			case IFLA_BR_GROUP_FWD_MASK:
+			case IFLA_BR_ROOT_PORT:
+				printf("%u}", mnl_attr_get_u16(a));
+				break;
+			case IFLA_BR_VLAN_FILTERING:
+			case IFLA_BR_VLAN_STATS_ENABLED:
+			case IFLA_BR_VLAN_STATS_PER_PORT:
+			case IFLA_BR_MCAST_STATS_ENABLED:
+			case IFLA_BR_TOPOLOGY_CHANGE:
+			case IFLA_BR_TOPOLOGY_CHANGE_DETECTED:
+			case IFLA_BR_MCAST_ROUTER:
+			case IFLA_BR_MCAST_SNOOPING:
+			case IFLA_BR_MCAST_QUERY_USE_IFADDR:
+			case IFLA_BR_MCAST_QUERIER:
+			case IFLA_BR_MCAST_IGMP_VERSION:
+			case IFLA_BR_MCAST_MLD_VERSION:
+			case IFLA_BR_NF_CALL_IPTABLES:
+			case IFLA_BR_NF_CALL_IP6TABLES:
+			case IFLA_BR_NF_CALL_ARPTABLES:
+				printf("%u}", mnl_attr_get_u8(a));
+				break;
+			case IFLA_BR_ROOT_ID:
+			case IFLA_BR_BRIDGE_ID:
+				id = (struct ifla_bridge_id*)mnl_attr_get_payload(a);
+				printf("(prio %02x%02x, addr %02x:%02x:%02x:%02x:%02x:%02x)}", id->prio[0], id->prio[1],
+					id->addr[0], id->addr[1], id->addr[2], id->addr[3], id->addr[4], id->addr[5]);
+				break;
+			case IFLA_BR_GROUP_ADDR:
+				addr = (uint8_t*)mnl_attr_get_payload(a);
+				printf("%02x:%02x:%02x:%02x:%02x:%02x}", addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
+				break;
+			case IFLA_BR_FDB_FLUSH:
+				break;
+			case IFLA_BR_MULTI_BOOLOPT:
+				// multi = (struct br_boolopt_multi *)mnl_attr_get_payload(a);
+				// printf("(optval %u, optmask %u)}",multi->optval, multi->optmask);
+				break;
+		}
+	}
+
+	return 0;
+}
+
 static int
 print_info_attr(const struct nlattr *a, void *data)
 {
@@ -93,17 +192,19 @@ print_info_attr(const struct nlattr *a, void *data)
         printf("mnl_attr_type_valid");
 		return MNL_CB_OK;
     }
+	static int driver;
 
-	printf(" {nla_len=%d, nla_type=%s, ", mnl_attr_get_len(a), ifla[type]);
+	printf("{nla_len=%d, nla_type=%s, ", mnl_attr_get_len(a), ifla[type]);
 	switch (type) {
 	case IFLA_INFO_KIND:
+		driver = driver_kind(mnl_attr_get_str(a));
 	case IFLA_INFO_SLAVE_KIND:
 		printf("%s}", mnl_attr_get_str(a));
 		break;
 	case IFLA_INFO_DATA:
 		//it depends on the driver
 		mnl_attr_for_each_payload(mnl_attr_get_payload(a), mnl_attr_get_payload_len(a)) {
-			print_info_data_attr(attr, NULL);
+			print_info_data_attr(attr, driver, NULL);
 		}
 		printf("}");
 		break;
@@ -610,6 +711,7 @@ static int
 print_nd_attr(const struct nlattr *a, void *data)
 {
 	uint8_t *addr;
+	char buff[32];
 	struct nda_cacheinfo *cache;
 	int type = mnl_attr_get_type(a);
 	static char *nda[] = {
@@ -637,8 +739,12 @@ print_nd_attr(const struct nlattr *a, void *data)
 		case NDA_DST:
 		case NDA_LLADDR:
 			addr = (uint8_t *)mnl_attr_get_payload(a);
-			for (int i = 0; i < mnl_attr_get_payload_len(a); i++) {
-				printf(" 0x%02x", addr[i]);
+			if (mnl_attr_get_payload_len(a) == 4) {
+				inet_ntop(AF_INET, addr, buff, 32);
+				printf(" %s", buff);
+			} else {
+				inet_ntop(AF_INET6, addr, buff, 32);
+				printf(" %s", buff);
 			}
 			printf("}");
 			break;
@@ -795,9 +901,36 @@ print_ndmsg(void *msg)
 		ADDR_FAMILY_ENUM
 #undef _
 	};
+	static char *states[] = {
+		[0] = "NUD_NONE",
+		[1] = "NUD_INCOMPLETE",
+		[2] = "NUD_REACHABLE",
+		[4] = "NUD_STALE",
+		[8] = "NUD_DELAY",
+ 		[16] = "NUD_PROBE",
+ 		[0x20] = "NUD_FAILED",
+ 		[0x40] = "NUD_NOARP",
+		[0x80] = "NUD_PERMANENT",
+	};
+	static char *rte_type[] = {
+		"RTN_UNSPEC",
+		"RTN_UNICAST",
+		"RTN_LOCAL",
+		"RTN_BROADCAST",
+		"RTN_ANYCAST",
+		"RTN_MULTICAST",
+		"RTN_BLACKHOLE",
+		"RTN_UNREACHABLE",
+		"RTN_PROHIBIT",
+		"RTN_THROW",
+		"RTN_NAT",
+		"RTN_XRESOLVE",
+	};
+	char if_name[IF_NAMESIZE] = {'\0'};
 	struct ndmsg *nd = (struct ndmsg *)msg;
-	printf("{ndm_family=%s, ndm_ifindex=%u, ndm_state=%u, ndm_flags=%u, ndm_type=%u}", 
-		afname[nd->ndm_family], nd->ndm_ifindex, nd->ndm_state, nd->ndm_flags, nd->ndm_type);
+	if_indextoname(nd->ndm_ifindex, if_name);
+	printf("{ndm_family=%s, ndm_ifindex=%u(if_nametoindex(\"%s\")), ndm_state=%s, ndm_flags=%u, ndm_type=%s}", 
+		afname[nd->ndm_family], nd->ndm_ifindex, if_name, states[nd->ndm_state], nd->ndm_flags, rte_type[nd->ndm_type]);
 
 	return 0;
 }
@@ -895,11 +1028,11 @@ int main(void)
 		perror("mnl_socket_setsockopt");
 		exit(EXIT_FAILURE);
 	}
-	ret = mnl_socket_setsockopt(nl, NETLINK_LISTEN_ALL_NSID, &one, sizeof(one));
-	if (ret) {
-		perror("mnl_socket_setsockopt");
-		exit(EXIT_FAILURE);
-	}
+	// ret = mnl_socket_setsockopt(nl, NETLINK_LISTEN_ALL_NSID, &one, sizeof(one));
+	// if (ret) {
+	// 	perror("mnl_socket_setsockopt");
+	// 	exit(EXIT_FAILURE);
+	// }
 
 	if (mnl_socket_bind(nl, RTNLGRP_LINK|RTNLGRP_NOTIFY|RTNLGRP_NEIGH|RTNLGRP_TC|RTNLGRP_IPV4_IFADDR|RTNLGRP_IPV4_MROUTE|
 		RTNLGRP_IPV4_ROUTE|RTNLGRP_IPV4_RULE|RTNLGRP_IPV6_IFADDR|RTNLGRP_IPV6_MROUTE|RTNLGRP_IPV6_ROUTE|RTNLGRP_IPV6_IFINFO|
