@@ -78,6 +78,7 @@ driver_kind(const char *type)
 		"bridge",
 		"tun",
 		"bond",
+		"vlan",
 	};
 	for (size_t i = 0; i < MNL_ARRAY_SIZE(kinds); i ++) {
 		if (!strcmp(kinds[i], type)) {
@@ -168,6 +169,30 @@ print_info_data_attr(const struct nlattr *a, int driver_type, void *data)
 			case IFLA_BR_MULTI_BOOLOPT:
 				// multi = (struct br_boolopt_multi *)mnl_attr_get_payload(a);
 				// printf("(optval %u, optmask %u)}",multi->optval, multi->optmask);
+				break;
+		}
+	}else if (driver_type == 0) {
+		static char *ifla[] = {
+			"IFLA_VLAN_UNSPEC",
+			"IFLA_VLAN_ID",
+			"IFLA_VLAN_FLAGS",
+			"IFLA_VLAN_EGRESS_QOS",
+			"IFLA_VLAN_INGRESS_QOS",
+			"IFLA_VLAN_PROTOCOL",
+		};
+		struct ifla_vlan_flags *flags;
+		printf("{nla_len=%d, nla_type=%s, ", mnl_attr_get_len(a), ifla[type]);
+		switch(type) {
+			case IFLA_VLAN_ID:
+			case IFLA_VLAN_PROTOCOL:
+				printf("%u}", mnl_attr_get_u16(a));
+				break;
+			case IFLA_VLAN_FLAGS:
+				flags = (struct ifla_vlan_flags *)mnl_attr_get_payload(a);
+				printf("(flags %u, mask %u)}", flags->flags, flags->mask);
+				break;
+			case IFLA_VLAN_EGRESS_QOS:
+			case IFLA_VLAN_INGRESS_QOS:
 				break;
 		}
 	}
