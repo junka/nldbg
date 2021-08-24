@@ -556,8 +556,8 @@ print_link_attr(const struct nlattr *a, void *data)
 	case IFLA_ADDRESS:
 	case IFLA_BROADCAST:
 		mac = (uint8_t* )mnl_attr_get_payload(a);
-		assert(mnl_attr_get_len(a) - 4 == 6);
-		for(int i = 0; i < 6; i++) {
+		// assert(mnl_attr_get_len(a) - 4 == 6);
+		for(int i = 0; i < mnl_attr_get_payload_len(a); i++) {
             printf("%02x%s", mac[i], i < 5 ? ":":"");
 		}
 		printf("}");
