@@ -22,6 +22,7 @@
 #include <linux/if_link.h>
 #include <linux/rtnetlink.h>
 #include <linux/if_packet.h>
+#include <linux/net_namespace.h>
 
 #include "nltrace.h"
 
@@ -652,6 +653,37 @@ print_link_attr(const struct nlattr *a, void *data)
 }
 
 static int
+print_ns_attr(const struct nlattr *a, void *data)
+{
+	int type = mnl_attr_get_type(a);
+	static char *nsa[] = {
+		"NETNSA_NONE",
+		"NETNSA_NSID",
+		"NETNSA_PID",
+		"NETNSA_FD",
+		"NETNSA_TARGET_NSID",
+		"NETNSA_CURRENT_NSID",
+	};
+
+	if (mnl_attr_type_valid(a, NETNSA_MAX) < 0) {
+		printf("mnl_attr_type_valid");
+		return MNL_CB_OK;
+	}
+	printf(" {nla_len=%d, nla_type=%s, ", mnl_attr_get_len(a), nsa[type]);
+	switch(type) {
+		case NETNSA_NSID:
+		case NETNSA_PID:
+		case NETNSA_FD:
+		case NETNSA_TARGET_NSID:
+		case NETNSA_CURRENT_NSID:
+			printf("%u}", mnl_attr_get_u32(a));
+			break;
+	}
+
+	return MNL_CB_OK;
+}
+
+static int
 print_route_attr(const struct nlattr *a, void *data)
 {
 	int type = mnl_attr_get_type(a);
@@ -885,7 +917,8 @@ print_ifinfomsg(void *msg)
 		ADDR_FAMILY_ENUM
 #undef _
 	};
-	if_indextoname(ifm->ifi_index, if_name);
+	if (ifm->ifi_index != 0)
+		if_indextoname(ifm->ifi_index, if_name);
 	printf("{ifi_family=%s, ifi_type=%u, ifi_index=%d(if_nametoindex(\"%s\")), ifi_flags=0x%x(",
 		afname[ifm->ifi_family], ifm->ifi_type, ifm->ifi_index, if_name, ifm->ifi_flags);
 	for (size_t i = 0; i < MNL_ARRAY_SIZE(flags); i++) {
@@ -956,7 +989,8 @@ print_ndmsg(void *msg)
 	};
 	char if_name[IF_NAMESIZE] = {'\0'};
 	struct ndmsg *nd = (struct ndmsg *)msg;
-	if_indextoname(nd->ndm_ifindex, if_name);
+	if (nd->ndm_ifindex!=0)
+		if_indextoname(nd->ndm_ifindex, if_name);
 	printf("{ndm_family=%s, ndm_ifindex=%u(if_nametoindex(\"%s\")), ndm_state=%s, ndm_flags=%u, ndm_type=%s}", 
 		afname[nd->ndm_family], nd->ndm_ifindex, if_name, states[nd->ndm_state], nd->ndm_flags, rte_type[nd->ndm_type]);
 
@@ -975,7 +1009,9 @@ data_cb(const struct nlmsghdr *nlh, void *data)
 		RTM_TYPE_ENUM
 #undef _
 	};
+	struct rtgenmsg *genmsg;
 	void *msg = mnl_nlmsg_get_payload(nlh);
+	genmsg = (struct rtgenmsg *)msg;
 	printf("{len=%d, type=%d(%s), flags=%d, seq=%u, pid=%u}, ",nlh->nlmsg_len, nlh->nlmsg_type,
 		msgtype[nlh->nlmsg_type], nlh->nlmsg_flags, nlh->nlmsg_seq, nlh->nlmsg_pid);
 	switch (nlh->nlmsg_type) {
@@ -1010,6 +1046,14 @@ data_cb(const struct nlmsghdr *nlh, void *data)
 			print_ndmsg(msg);
 			printf("{");
 			mnl_attr_parse(nlh, sizeof(struct ndmsg), print_nd_attr, NULL);
+			printf("}");
+			break;
+		case RTM_NEWNSID:
+		case RTM_DELNSID:
+		case RTM_GETNSID:
+			printf("{rtgen_family=%d}", genmsg->rtgen_family);
+			printf("{");
+			mnl_attr_parse(nlh, sizeof(struct rtgenmsg), print_ns_attr, NULL);
 			printf("}");
 			break;
 	}
@@ -1109,13 +1153,13 @@ capture_nlmon()
 	recvlen = recvfrom(so, buffer, sizeof(buffer), 0, NULL, NULL);
 	while (recvlen > 0 && running) {
 		recvlen = mnl_cb_run(buffer, recvlen, 0, 0, data_cb, NULL);
-		if (recvlen <= 0)
+		if (recvlen < 0)
 			break;
 		recvlen = recvfrom(so, buffer, sizeof(buffer), 0, NULL, NULL);
-		if (recvlen == -1) {
-			perror("error");
-			exit(EXIT_FAILURE);
-		}
+	}
+	if (recvlen < 0) {
+		perror("error");
+		exit(EXIT_FAILURE);
 	}
 	return 0;
 }
@@ -1155,11 +1199,6 @@ int main(void)
 		perror("mnl_socket_setsockopt");
 		exit(EXIT_FAILURE);
 	}
-	// ret = mnl_socket_setsockopt(nl, NETLINK_LISTEN_ALL_NSID, &one, sizeof(one));
-	// if (ret) {
-	// 	perror("mnl_socket_setsockopt");
-	// 	exit(EXIT_FAILURE);
-	// }
 
 	if (mnl_socket_bind(nl, 0, MNL_SOCKET_AUTOPID) < 0) {
 		perror("mnl_socket_bind");
