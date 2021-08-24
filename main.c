@@ -227,6 +227,7 @@ print_info_attr(const struct nlattr *a, void *data)
 	switch (type) {
 	case IFLA_INFO_KIND:
 		driver = driver_kind(mnl_attr_get_str(a));
+		/* FALLTHROUGH */
 	case IFLA_INFO_SLAVE_KIND:
 		printf("%s}", mnl_attr_get_str(a));
 		break;
@@ -752,6 +753,7 @@ print_addr_attr(const struct nlattr *a, void *data)
 		break;
 	case IFA_LABEL:
 		printf("%s}", mnl_attr_get_str(a));
+		/* FALLTHROUGH */
 	case IFA_CACHEINFO:
 		cache = (struct ifa_cacheinfo *)mnl_attr_get_payload(a);
 		printf("(ifa_prefered %u, ifa_valid %u, cstamp %u, tstamp %u)", cache->ifa_prefered,
