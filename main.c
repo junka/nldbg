@@ -10,15 +10,18 @@
 #include <net/if.h> 
 #include <sys/socket.h>
 #include <arpa/inet.h>
-//  #include <sys/types.h>
+#include <time.h>
+#include <sys/ioctl.h>
 
 #include <libmnl/libmnl.h>
 #include <linux/ip.h>
 #include <linux/ipv6.h>
 #include <linux/snmp.h>
 #include <linux/if.h>
+#include <linux/if_ether.h>
 #include <linux/if_link.h>
 #include <linux/rtnetlink.h>
+#include <linux/if_packet.h>
 
 #include "nltrace.h"
 
@@ -214,9 +217,9 @@ print_info_attr(const struct nlattr *a, void *data)
 	};
 	int type = mnl_attr_get_type(a);
 	if (mnl_attr_type_valid(a, IFLA_INFO_MAX) < 0) {
-        printf("mnl_attr_type_valid");
+		printf("mnl_attr_type_valid");
 		return MNL_CB_OK;
-    }
+	}
 	static int driver;
 
 	printf("{nla_len=%d, nla_type=%s, ", mnl_attr_get_len(a), ifla[type]);
@@ -964,12 +967,16 @@ static int
 data_cb(const struct nlmsghdr *nlh, void *data)
 {
 	static char * msgtype[] = {
+		[1] = "NLMSG_NOOP",
+		[2] = "NLMSG_ERROR",
+		[3] = "NLMSG_DONE",
+		[4] = "NLMSG_OVERRUN",
 #define _(a, v)  [v] = #a
 		RTM_TYPE_ENUM
 #undef _
 	};
 	void *msg = mnl_nlmsg_get_payload(nlh);
-	printf("{len=%d, type=%s, flags=%d, seq=%u, pid=%u}, ",nlh->nlmsg_len,
+	printf("{len=%d, type=%d(%s), flags=%d, seq=%u, pid=%u}, ",nlh->nlmsg_len, nlh->nlmsg_type,
 		msgtype[nlh->nlmsg_type], nlh->nlmsg_flags, nlh->nlmsg_seq, nlh->nlmsg_pid);
 	switch (nlh->nlmsg_type) {
 		case RTM_NEWLINK:
@@ -1011,21 +1018,115 @@ data_cb(const struct nlmsghdr *nlh, void *data)
 	return MNL_CB_OK;
 }
 
-static const int fatal_signals[] = { SIGTERM, SIGHUP, SIGALRM,
+static const int fatal_signals[] = { SIGINT, SIGTERM, SIGHUP, SIGALRM,
 									SIGSEGV, SIGABRT};
+
+static bool running = true;
 
 void
 fatal_signal_handler(int sig_nr)
 {
-
+	running = false;
 }
+
+
+
+/* ip l add nlmon0 type nlmon */
+void
+create_nlmon(struct mnl_socket *nl)
+{
+	uint8_t buf[MNL_SOCKET_BUFFER_SIZE];
+	struct nlmsghdr *nlh = mnl_nlmsg_put_header(buf);
+	nlh->nlmsg_type	= RTM_NEWLINK;
+	nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL;
+	nlh->nlmsg_seq = time(NULL);
+	struct ifinfomsg *ifm = mnl_nlmsg_put_extra_header(nlh, sizeof(*ifm));
+	ifm->ifi_family = AF_UNSPEC;
+	ifm->ifi_change = IFF_UP;
+	ifm->ifi_flags = IFF_UP;
+
+	/* \x0b\x00 \x03\x00 \x6e\x6c\x6d\x6f\x6e\x30\x00\x00  */
+	mnl_attr_put_str(nlh, IFLA_IFNAME, "nlmon0");
+	/* \x10\x00 \x12\x00 \x09\x00 \x01\x00 \x6e\x6c\x6d\x6f\x6e\x00\x00\x00 */
+	struct nlattr * linkinfo = mnl_attr_nest_start(nlh, IFLA_LINKINFO);
+	mnl_attr_put_str(nlh, IFLA_INFO_KIND, "nlmon");
+	mnl_attr_nest_end(nlh, linkinfo);
+
+	if (mnl_socket_sendto(nl, nlh, nlh->nlmsg_len) < 0) {
+		perror("mnl_socket_sendto");
+		exit(EXIT_FAILURE);
+	}
+}
+
+
+/* ip l del nlmon0 */
+void
+destroy_nlmon(struct mnl_socket *nl)
+{
+	uint8_t buf[MNL_SOCKET_BUFFER_SIZE];
+	struct nlmsghdr *nlh = mnl_nlmsg_put_header(buf);
+	nlh->nlmsg_type	= RTM_DELLINK;
+	nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+	nlh->nlmsg_seq = time(NULL);
+	struct ifinfomsg *ifm = mnl_nlmsg_put_extra_header(nlh, sizeof(*ifm));
+	ifm->ifi_family = AF_UNSPEC;
+	ifm->ifi_index = if_nametoindex("nlmon0");
+
+	if (mnl_socket_sendto(nl, nlh, nlh->nlmsg_len) < 0) {
+		perror("mnl_socket_sendto");
+		exit(EXIT_FAILURE);
+	}
+}
+
+int
+capture_nlmon()
+{
+	int so = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
+	if (so < 0) {
+		printf("sock create fail!\n");
+		return -1;
+	}
+	struct ifreq ifr;
+	struct sockaddr_ll sll;
+    memset( &sll, 0, sizeof(sll));
+    sll.sll_family = AF_PACKET;
+	sll.sll_ifindex = if_nametoindex("nlmon0");
+    sll.sll_protocol = htons(ETH_P_ALL);
+
+	ssize_t recvlen;
+	uint8_t buffer[MNL_SOCKET_BUFFER_SIZE];
+
+	if (bind(so, (struct sockaddr *) &sll, sizeof(sll)) == -1) {
+		perror("bind error:");
+		exit(-1);
+	}
+
+	//promisc
+	strcpy(ifr.ifr_name, "nlmon0");
+	ifr.ifr_flags |= IFF_PROMISC;
+	ioctl(so, SIOCGIFFLAGS, &ifr);
+
+	recvlen = recvfrom(so, buffer, sizeof(buffer), 0, NULL, NULL);
+	while (recvlen > 0 && running) {
+		recvlen = mnl_cb_run(buffer, recvlen, 0, 0, data_cb, NULL);
+		if (recvlen <= 0)
+			break;
+		recvlen = recvfrom(so, buffer, sizeof(buffer), 0, NULL, NULL);
+		if (recvlen == -1) {
+			perror("error");
+			exit(EXIT_FAILURE);
+		}
+	}
+	return 0;
+}
+
 
 int main(void)
 {
 	struct mnl_socket *nl;
-	char buf[MNL_SOCKET_BUFFER_SIZE];
 	int ret;
 	int one = 1;
+
 	for (size_t i = 0; i < MNL_ARRAY_SIZE(fatal_signals); i++) {
 		struct sigaction old_sa;
 		int sig_nr = fatal_signals[i];
@@ -1035,8 +1136,9 @@ int main(void)
 			exit(EXIT_FAILURE);
 		}
 	}
-	// sock(AF_PACKET, SOCK_RAW, )
-	// nl = mnl_socket_open(NETLINK_GENERIC);
+
+	setuid(0);
+
 	nl = mnl_socket_open(NETLINK_ROUTE);
 	if (nl == NULL) {
 		perror("mnl_socket_open");
@@ -1059,29 +1161,19 @@ int main(void)
 	// 	exit(EXIT_FAILURE);
 	// }
 
-	if (mnl_socket_bind(nl, RTNLGRP_LINK|RTNLGRP_NOTIFY|RTNLGRP_NEIGH|RTNLGRP_TC|RTNLGRP_IPV4_IFADDR|RTNLGRP_IPV4_MROUTE|
-		RTNLGRP_IPV4_ROUTE|RTNLGRP_IPV4_RULE|RTNLGRP_IPV6_IFADDR|RTNLGRP_IPV6_MROUTE|RTNLGRP_IPV6_ROUTE|RTNLGRP_IPV6_IFINFO|
-		RTNLGRP_DECnet_IFADDR|RTNLGRP_NOP2|RTNLGRP_DECnet_ROUTE|RTNLGRP_DECnet_RULE|RTNLGRP_NOP4|RTNLGRP_IPV6_PREFIX|RTNLGRP_IPV6_RULE|
-		RTNLGRP_ND_USEROPT|RTNLGRP_PHONET_IFADDR|RTNLGRP_PHONET_ROUTE|RTNLGRP_DCB|RTNLGRP_IPV4_NETCONF|RTNLGRP_IPV6_NETCONF|RTNLGRP_MDB|
-		RTNLGRP_MPLS_ROUTE|RTNLGRP_NSID|RTNLGRP_MPLS_NETCONF|RTNLGRP_IPV4_MROUTE_R|RTNLGRP_IPV6_MROUTE_R|RTNLGRP_NEXTHOP, MNL_SOCKET_AUTOPID) < 0) {
+	if (mnl_socket_bind(nl, 0, MNL_SOCKET_AUTOPID) < 0) {
 		perror("mnl_socket_bind");
 		exit(EXIT_FAILURE);
 	}
 
 	int fd = mnl_socket_get_fd(nl);
 	printf("%d\n", fd);
-	ret = mnl_socket_recvfrom(nl, buf, sizeof(buf));
-	while (ret > 0) {
-		ret = mnl_cb_run(buf, ret, 0, 0, data_cb, NULL);
-		if (ret <= 0)
-			break;
-		ret = mnl_socket_recvfrom(nl, buf, sizeof(buf));
-	}
-	if (ret == -1) {
-		perror("error");
-		exit(EXIT_FAILURE);
-	}
 
+	create_nlmon(nl);
+
+	capture_nlmon();
+
+	destroy_nlmon(nl);
 	mnl_socket_close(nl);
 
 	return 0;
