@@ -4,16 +4,13 @@
 #include <stdint.h>
 #include <assert.h>
 #include <string.h>
-
+#include <time.h>
 #include <signal.h>
 #include <sys/epoll.h>
 #include <net/if.h> 
 #include <sys/socket.h>
 #include <arpa/inet.h>
-#include <time.h>
-#include <sys/ioctl.h>
 
-#include <libmnl/libmnl.h>
 #include <linux/ip.h>
 #include <linux/ipv6.h>
 #include <linux/snmp.h>
@@ -23,6 +20,8 @@
 #include <linux/rtnetlink.h>
 #include <linux/if_packet.h>
 #include <linux/net_namespace.h>
+
+#include <libmnl/libmnl.h>
 
 #include "nltrace.h"
 
@@ -48,7 +47,7 @@ print_info_slave_data_attr(const struct nlattr *a, void *data)
 	uint8_t *permhw;
 	int type = mnl_attr_get_type(a);
 
-	printf(" {nla_len=%d, nla_type=%s, ", mnl_attr_get_len(a), ifla[type]);
+	printf("{nla_len=%d, nla_type=%s, ", mnl_attr_get_len(a), ifla[type]);
 	switch(type){
 	case IFLA_BOND_SLAVE_STATE:
 	case IFLA_BOND_SLAVE_MII_STATUS:
@@ -60,7 +59,6 @@ print_info_slave_data_attr(const struct nlattr *a, void *data)
 		break;
 	case IFLA_BOND_SLAVE_PERM_HWADDR:
 		permhw = (uint8_t* )mnl_attr_get_payload(a);
-		// assert(mnl_attr_get_len(a) - 4 <= 32);
 		for (int i = 0; i < mnl_attr_get_payload_len(a); i++) {
 			printf("%02x", permhw[i]);
 		}
@@ -232,7 +230,7 @@ print_info_attr(const struct nlattr *a, void *data)
 		printf("%s}", mnl_attr_get_str(a));
 		break;
 	case IFLA_INFO_DATA:
-		//it depends on the driver
+		/* it depends on the driver */
 		mnl_attr_for_each_payload(mnl_attr_get_payload(a), mnl_attr_get_payload_len(a)) {
 			print_info_data_attr(attr, driver, NULL);
 		}
@@ -387,7 +385,6 @@ print_af_attr(const struct nlattr *a, void *data)
 		of a u32 array, basically a 1:1 copy of in_device->cnf.data[].
 		The attribute expected by the kernel must consist of a sequence
 		of nested u32 attributes, each representing a change request,*/
-		// assert((IPV4_DEVCONF_MAX-1)*4 == mnl_attr_get_payload_len(a));
 		d = (uint8_t *)mnl_attr_get_payload(a);
 		for(size_t i = 0; i < mnl_attr_get_payload_len(a); i+=4) {
 			printf("%s[%s] = %u", (i==0)?" ":", ", ip4_devconf[i/4+1], *(uint32_t *)(d + i));
@@ -446,7 +443,6 @@ print_af6_attr(const struct nlattr *a, void *data)
 		printf("0x%x}", mnl_attr_get_u32(a));
 		break;
 	case IFLA_INET6_CONF:
-		// assert((DEVCONF_MAX - 1) * 4 == mnl_attr_get_payload_len(a));
 		d = (uint8_t *)mnl_attr_get_payload(a);
 		for(size_t i = 0; i < mnl_attr_get_payload_len(a); i += 4) {
 			printf("%s[%s] = %u", (i == 0) ? " " : ", ", ipv6_devconf[i/4], *(uint32_t *)(d + i));
@@ -547,7 +543,6 @@ print_link_attr(const struct nlattr *a, void *data)
 	case IFLA_PHYS_PORT_ID:
 	case IFLA_PHYS_SWITCH_ID:
 		mac = (uint8_t* )mnl_attr_get_payload(a);
-		// assert(mnl_attr_get_len(a) - 4 <= 32);
 		for (int i = 0; i < mnl_attr_get_payload_len(a); i++) {
 			printf("%02x", mac[i]);
 		}
@@ -556,7 +551,6 @@ print_link_attr(const struct nlattr *a, void *data)
 	case IFLA_ADDRESS:
 	case IFLA_BROADCAST:
 		mac = (uint8_t* )mnl_attr_get_payload(a);
-		// assert(mnl_attr_get_len(a) - 4 == 6);
 		for(int i = 0; i < mnl_attr_get_payload_len(a); i++) {
             printf("%02x%s", mac[i], i < 5 ? ":":"");
 		}
@@ -602,7 +596,6 @@ print_link_attr(const struct nlattr *a, void *data)
 		printf("}");
 		break;
 	case IFLA_LINKINFO:
-		// mnl_attr_parse_nested(a, print_info_attr, NULL);
 		mnl_attr_for_each_payload(mnl_attr_get_payload(a), mnl_attr_get_payload_len(a)) {
 			print_info_attr(attr, NULL);
 		}
@@ -1132,35 +1125,56 @@ capture_nlmon()
 		printf("sock create fail!\n");
 		return -1;
 	}
-	struct ifreq ifr;
+	// struct ifreq ifr;
+
 	struct sockaddr_ll sll;
-    memset( &sll, 0, sizeof(sll));
-    sll.sll_family = AF_PACKET;
+	memset( &sll, 0, sizeof(sll));
+	sll.sll_family = AF_PACKET;
 	sll.sll_ifindex = if_nametoindex("nlmon0");
-    sll.sll_protocol = htons(ETH_P_ALL);
+	sll.sll_protocol = htons(ETH_P_ALL);
 
 	ssize_t recvlen;
 	uint8_t buffer[MNL_SOCKET_BUFFER_SIZE];
+	struct iovec iov[1];
+	iov[0].iov_base = buffer;
+	iov[0].iov_len = sizeof(buffer);
+
+	struct msghdr msg;
+	msg.msg_name = &sll;
+	msg.msg_namelen = sizeof(sll);
+	msg.msg_iov = iov;
+	msg.msg_iovlen = 1;
+	msg.msg_control = 0;
+	msg.msg_controllen = 0;
+
 
 	if (bind(so, (struct sockaddr *) &sll, sizeof(sll)) == -1) {
 		perror("bind error:");
 		exit(-1);
 	}
 
-	//promisc
-	strcpy(ifr.ifr_name, "nlmon0");
-	ifr.ifr_flags |= IFF_PROMISC;
-	ioctl(so, SIOCGIFFLAGS, &ifr);
+	/* enable promisc on nlmon0 */
+	struct packet_mreq mreq = {0};
+	mreq.mr_ifindex = if_nametoindex("nlmon0");
+	mreq.mr_type = PACKET_MR_PROMISC;
+	if (setsockopt(so, SOL_PACKET, PACKET_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) == -1) {
+		perror("setsockopt");
+		exit(1);
+	}
 
-	recvlen = recvfrom(so, buffer, sizeof(buffer), 0, NULL, NULL);
-	while (recvlen > 0 && running) {
-		recvlen = mnl_cb_run(buffer, recvlen, 0, 0, data_cb, NULL);
-		if (recvlen < 0)
-			break;
-		recvlen = recvfrom(so, buffer, sizeof(buffer), 0, NULL, NULL);
+	recvlen = recvmsg(so, &msg, 0);
+	while (recvlen >= 0 && running) {
+		if (msg.msg_flags & MSG_TRUNC) {
+			printf("frame too large for buffer: trucated");
+		} else {
+			recvlen = mnl_cb_run(buffer, recvlen, 0, 0, data_cb, NULL);
+			if (recvlen < 0)
+				break;
+		}
+		recvlen = recvmsg(so, &msg, 0);
 	}
 	if (recvlen < 0) {
-		perror("error");
+		perror("error: recv length");
 		exit(EXIT_FAILURE);
 	}
 	return 0;
