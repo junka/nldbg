@@ -6,6 +6,7 @@
 #include <string.h>
 #include <time.h>
 #include <signal.h>
+#include <errno.h>
 #include <sys/epoll.h>
 #include <net/if.h> 
 #include <sys/socket.h>
@@ -1004,11 +1005,32 @@ data_cb(const struct nlmsghdr *nlh, void *data)
 		RTM_TYPE_ENUM
 #undef _
 	};
+	static char * flags[] = {
+		[0] = "NLM_F_REQUEST",
+		[1] = "NLM_F_MULTI",
+		[2] = "NLM_F_ACK",
+		[3] = "NLM_F_ECHO",
+		[4] = "NLM_F_DUMP_INTR",
+		[5] = "NLM_F_DUMP_FILTERED",
+		[6] = "NLM_F_ROOT",
+		[7] = "NLM_F_MATCH",
+		[8] = "NLM_F_ATOMIC",
+		[10] = "NLM_F_REPLACE",
+		[11] = "NLM_F_EXCL",
+		[12] = "NLM_F_CREATE",
+		[13] = "NLM_F_APPEND",
+	};
 	struct rtgenmsg *genmsg;
 	void *msg = mnl_nlmsg_get_payload(nlh);
 	genmsg = (struct rtgenmsg *)msg;
-	printf("{len=%d, type=%d(%s), flags=%d, seq=%u, pid=%u}, ",nlh->nlmsg_len, nlh->nlmsg_type,
-		msgtype[nlh->nlmsg_type], nlh->nlmsg_flags, nlh->nlmsg_seq, nlh->nlmsg_pid);
+	printf("{len=%d, type=%d(%s), flags=%d(",nlh->nlmsg_len, nlh->nlmsg_type,
+		msgtype[nlh->nlmsg_type], nlh->nlmsg_flags);
+	for(size_t i = 0; i < MNL_ARRAY_SIZE(flags); i ++) {
+		if (nlh->nlmsg_flags & (1 << i)) {
+			printf("%s ", flags[i]);
+		}
+	}
+	printf("), seq=%u, pid=%u}, ",  nlh->nlmsg_seq, nlh->nlmsg_pid);
 	switch (nlh->nlmsg_type) {
 		case RTM_NEWLINK:
 		case RTM_DELLINK:
@@ -1174,8 +1196,9 @@ capture_nlmon()
 		recvlen = recvmsg(so, &msg, 0);
 	}
 	if (recvlen < 0) {
-		perror("error: recv length");
-		exit(EXIT_FAILURE);
+		printf("error: %d recv length %d\n", errno, recvlen);
+		perror("error");
+		return -1;
 	}
 	return 0;
 }
@@ -1226,7 +1249,10 @@ int main(void)
 
 	create_nlmon(nl);
 
-	capture_nlmon();
+	/* skip recv msg error*/
+	while (running) {
+		capture_nlmon();
+	}
 
 	destroy_nlmon(nl);
 	mnl_socket_close(nl);
