@@ -18,10 +18,13 @@
 #include <linux/if.h>
 #include <linux/if_ether.h>
 #include <linux/if_link.h>
+#include <linux/if_arp.h>
 #include <linux/rtnetlink.h>
+#include <linux/genetlink.h>
 #include <linux/if_packet.h>
 #include <linux/fib_rules.h>
 #include <linux/net_namespace.h>
+#include <linux/netconf.h>
 
 #include <libmnl/libmnl.h>
 
@@ -29,6 +32,45 @@
 
 
 #define NLOG(fmt, ...) printf(fmt, ##__VA_ARGS__)
+
+#define LINE_LEN 128
+
+static void
+hexdump(const void *buf, unsigned int len)
+{
+	unsigned int i, out, ofs;
+	const unsigned char *data = buf;
+	char line[LINE_LEN];	/* space needed 8+16*3+3+16 == 75 */
+
+	NLOG("  Dump data at [%p], len=%u\n", data, len);
+	ofs = 0;
+	while (ofs < len) {
+		/* format the line in the buffer */
+		out = snprintf(line, LINE_LEN, "%08X:", ofs);
+		for (i = 0; i < 16; i++) {
+			if (ofs + i < len)
+				snprintf(line + out, LINE_LEN - out,
+					 " %02X", (data[ofs + i] & 0xff));
+			else
+				strcpy(line + out, "   ");
+			out += 3;
+		}
+
+
+		for (; i <= 16; i++)
+			out += snprintf(line + out, LINE_LEN - out, " | ");
+
+		for (i = 0; ofs < len && i < 16; i++, ofs++) {
+			unsigned char c = data[ofs];
+
+			if (c < ' ' || c > '~')
+				c = '.';
+			out += snprintf(line + out, LINE_LEN - out, "%c", c);
+		}
+		NLOG("%s\n", line);
+	}
+}
+
 
 static int
 print_info_slave_data_attr(const struct nlattr *a, void *data)
@@ -681,6 +723,132 @@ print_ns_attr(const struct nlattr *a, void *data)
 	return MNL_CB_OK;
 }
 
+static int print_ndta_para_attr(const struct nlattr *a, void *data)
+{
+	int type = mnl_attr_get_type(a);
+	static char *ndta[] = {
+		"NDTPA_IFINDEX",			/* u32, unchangeable */
+		"NDTPA_REFCNT",			/* u32, read-only */
+		"NDTPA_REACHABLE_TIME",		/* u64, read-only, msecs */
+		"NDTPA_BASE_REACHABLE_TIME",	/* u64, msecs */
+		"NDTPA_RETRANS_TIME",		/* u64, msecs */
+		"NDTPA_GC_STALETIME",		/* u64, msecs */
+		"NDTPA_DELAY_PROBE_TIME",		/* u64, msecs */
+		"NDTPA_QUEUE_LEN",		/* u32 */
+		"NDTPA_APP_PROBES",		/* u32 */
+		"NDTPA_UCAST_PROBES",		/* u32 */
+		"NDTPA_MCAST_PROBES",		/* u32 */
+		"NDTPA_ANYCAST_DELAY",		/* u64, msecs */
+		"NDTPA_PROXY_DELAY",		/* u64, msecs */
+		"NDTPA_PROXY_QLEN",		/* u32 */
+		"NDTPA_LOCKTIME",			/* u64, msecs */
+		"NDTPA_QUEUE_LENBYTES",		/* u32 */
+		"NDTPA_MCAST_REPROBES",		/* u32 */
+		"NDTPA_PAD",
+	};
+
+	NLOG(" {nla_len=%d, nla_type=%s, ", mnl_attr_get_len(a), ndta[type]);
+	if (mnl_attr_type_valid(a, NDTPA_MAX) < 0)
+		return MNL_CB_OK;
+	
+	switch(type) {
+		case NDTPA_IFINDEX:
+		case NDTPA_QUEUE_LEN:
+		case NDTPA_PROXY_QLEN:
+		case NDTPA_APP_PROBES:
+		case NDTPA_UCAST_PROBES:
+		case NDTPA_MCAST_PROBES:
+		case NDTPA_MCAST_REPROBES:
+			NLOG("%u}", mnl_attr_get_u32(a));
+			break;
+		case NDTPA_BASE_REACHABLE_TIME:
+		case NDTPA_GC_STALETIME:
+		case NDTPA_DELAY_PROBE_TIME:
+		case NDTPA_RETRANS_TIME:
+		case NDTPA_ANYCAST_DELAY:
+		case NDTPA_PROXY_DELAY:
+		case NDTPA_LOCKTIME:
+			NLOG("%lu}", mnl_attr_get_u64(a));
+			break;
+	}
+	return MNL_CB_OK;
+}
+static int
+print_netconf_attr(const struct nlattr *a, void *data)
+{
+	int type = mnl_attr_get_type(a);
+	static char *nta[] = {
+		"NETCONFA_UNSPEC",
+		"NETCONFA_IFINDEX",
+		"NETCONFA_FORWARDING",
+		"NETCONFA_RP_FILTER",
+		"NETCONFA_MC_FORWARDING",
+		"NETCONFA_PROXY_NEIGH",
+		"NETCONFA_IGNORE_ROUTES_WITH_LINKDOWN",
+		"NETCONFA_INPUT",
+		"NETCONFA_BC_FORWARDING",
+	};
+	if (mnl_attr_type_valid(a, NETCONFA_MAX) < 0)
+		return MNL_CB_OK;
+	
+	NLOG(" {nla_len=%d, nla_type=%s, ", mnl_attr_get_len(a), nta[type]);
+	switch(type) {
+		case NETCONFA_IFINDEX:
+		case NETCONFA_FORWARDING:
+		case NETCONFA_RP_FILTER:
+		case NETCONFA_MC_FORWARDING:
+		case NETCONFA_PROXY_NEIGH:
+		case NETCONFA_IGNORE_ROUTES_WITH_LINKDOWN:
+		case NETCONFA_INPUT:
+		case NETCONFA_BC_FORWARDING:
+			NLOG("%u}", mnl_attr_get_u32(a));
+			break;
+
+	}
+
+	return MNL_CB_OK;
+}
+static int
+print_ndtm_attr(const struct nlattr *a, void *data)
+{
+	int type = mnl_attr_get_type(a);
+	static char *ndta[] = {
+		"NDTA_UNSPEC",
+		"NDTA_NAME",			/* char *, unchangeable */
+		"NDTA_THRESH1",			/* u32 */
+		"NDTA_THRESH2",			/* u32 */
+		"NDTA_THRESH3",			/* u32 */
+		"NDTA_CONFIG",			/* struct ndt_config, read-only */
+		"NDTA_PARMS",			/* nested TLV NDTPA_* */
+		"NDTA_STATS",			/* struct ndt_stats, read-only */
+		"NDTA_GC_INTERVAL",		/* u64, msecs */
+		"NDTA_PAD",
+	};
+
+	if (mnl_attr_type_valid(a, NDTA_MAX) < 0)
+		return MNL_CB_OK;
+	
+	NLOG(" {nla_len=%d, nla_type=%s, ", mnl_attr_get_len(a), ndta[type]);
+	switch(type) {
+		case NDTA_NAME:
+			NLOG("%s}", mnl_attr_get_str(a));
+			break;
+		case NDTA_THRESH1:
+		case NDTA_THRESH2:
+		case NDTA_THRESH3:
+			NLOG("%u}", mnl_attr_get_u32(a));
+			break;
+		case NDTA_GC_INTERVAL:
+			NLOG("%lu}", mnl_attr_get_u64(a));
+			break;
+		case NDTA_PARMS:
+			mnl_attr_parse_nested(a, print_ndta_para_attr, data);
+			NLOG("}");
+			break;
+	}
+	return MNL_CB_OK;
+}
+
 static int
 print_route_attr(const struct nlattr *a, void *data)
 {
@@ -1067,7 +1235,7 @@ print_rulemsg(void *msg)
 	return 0;
 }
 
-static void
+static int
 print_nlmsghdr(const struct nlmsghdr *nlh)
 {
 	static char * msgtype[] = {
@@ -1102,17 +1270,22 @@ print_nlmsghdr(const struct nlmsghdr *nlh)
 		}
 	}
 	NLOG("), seq=%u, pid=%u}, ",  nlh->nlmsg_seq, nlh->nlmsg_pid);
+	return nlh->nlmsg_type;
 }
 
 static int
-data_cb(const struct nlmsghdr *nlh, void *data)
+netlink_cb(const struct nlmsghdr *nlh, void *data)
 {
-	struct rtgenmsg *genmsg;
+	struct rtgenmsg *rnmsg;
+	struct ndtmsg *ndtmsg;
+	struct netconfmsg *ncm;
 	void *msg = mnl_nlmsg_get_payload(nlh);
-	genmsg = (struct rtgenmsg *)msg;
-	if (nlh->nlmsg_type != 23)
-		print_nlmsghdr(nlh);
-	switch (nlh->nlmsg_type) {
+	
+	int type = print_nlmsghdr(nlh);
+	if (type <= NLMSG_MIN_TYPE) {
+		hexdump(msg, mnl_nlmsg_get_payload_len(nlh));
+	}
+	switch (type) {
 		case RTM_NEWLINK:
 		case RTM_DELLINK:
 		case RTM_GETLINK:
@@ -1157,21 +1330,51 @@ data_cb(const struct nlmsghdr *nlh, void *data)
 		case RTM_NEWNSID:
 		case RTM_DELNSID:
 		case RTM_GETNSID:
-			NLOG("{rtgen_family=%d}", genmsg->rtgen_family);
+			rnmsg = (struct rtgenmsg *)msg;
+			NLOG("{rtgen_family=%d}", rnmsg->rtgen_family);
 			NLOG("{");
 			mnl_attr_parse(nlh, sizeof(struct rtgenmsg), print_ns_attr, NULL);
 			NLOG("}");
 			break;
+		case RTM_NEWNEIGHTBL:
+		case RTM_GETNEIGHTBL:
+		case RTM_SETNEIGHTBL:
+			ndtmsg = (struct ndtmsg *)msg;
+			NLOG("{ndtm_family=%u}", ndtmsg->ndtm_family);
+			NLOG("{");
+			mnl_attr_parse(nlh, sizeof(struct ndtmsg), print_ndtm_attr, NULL);
+			NLOG("}");
+			break;
+		case RTM_NEWNETCONF:
+		case RTM_DELNETCONF:
+		case RTM_GETNETCONF:
+			ncm = (struct netconfmsg *)msg;
+			NLOG("{ncm_family=%u}", ncm->ncm_family);
+			NLOG("{");
+			mnl_attr_parse(nlh, sizeof(struct netconfmsg), print_netconf_attr, NULL);
+			NLOG("}");
+			break;
 	}
-	if (nlh->nlmsg_type != 23)
-		NLOG("\n");
+	NLOG("\n");
 	
+	return MNL_CB_OK;
+}
+
+static int
+ppp_cb(const struct nlmsghdr *nlh, void *data)
+{
+	struct genlmsghdr *ghr;
+	void *msg = mnl_nlmsg_get_payload(nlh);
+	print_nlmsghdr(nlh);
+	ghr = (struct genlmsghdr *) msg;
+	printf("{cmd=%u, version=%u}", ghr->cmd, ghr->version);
+	hexdump(msg, mnl_nlmsg_get_payload_len(nlh));
+	NLOG("\n");
 	return MNL_CB_OK;
 }
 
 static const int fatal_signals[] = { SIGINT, SIGTERM, SIGHUP, SIGALRM,
 									SIGSEGV, SIGABRT};
-
 static bool running = true;
 
 void
@@ -1179,8 +1382,6 @@ fatal_signal_handler(int sig_nr)
 {
 	running = false;
 }
-
-
 
 /* ip l add nlmon0 type nlmon */
 void
@@ -1221,9 +1422,7 @@ create_nlmon(void)
 		exit(EXIT_FAILURE);
 	}
 
-	/* \x0b\x00 \x03\x00 \x6e\x6c\x6d\x6f\x6e\x30\x00\x00  */
 	mnl_attr_put_str(nlh, IFLA_IFNAME, "nlmon0");
-	/* \x10\x00 \x12\x00 \x09\x00 \x01\x00 \x6e\x6c\x6d\x6f\x6e\x00\x00\x00 */
 	struct nlattr * linkinfo = mnl_attr_nest_start(nlh, IFLA_LINKINFO);
 	mnl_attr_put_str(nlh, IFLA_INFO_KIND, "nlmon");
 	mnl_attr_nest_end(nlh, linkinfo);
@@ -1235,7 +1434,6 @@ create_nlmon(void)
 
 	mnl_socket_close(nl);
 }
-
 
 /* ip l del nlmon0 */
 void
@@ -1275,7 +1473,6 @@ destroy_nlmon(void)
 		exit(EXIT_FAILURE);
 	}
 
-
 	if (mnl_socket_sendto(nl, nlh, nlh->nlmsg_len) < 0) {
 		perror("mnl_socket_sendto");
 		exit(EXIT_FAILURE);
@@ -1288,17 +1485,21 @@ int
 capture_nlmon()
 {
 	int one = 1;
-	int so = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
+	int so = socket(AF_PACKET, SOCK_DGRAM, htons(ETH_P_ALL));
 	if (so < 0) {
 		NLOG("sock create fail!\n");
 		return -1;
 	}
+	struct sockaddr_nl snl;
+	memset( &snl, 0, sizeof(snl));
+	snl.nl_family = AF_NETLINK;
 
 	struct sockaddr_ll sll;
 	memset( &sll, 0, sizeof(sll));
 	sll.sll_family = AF_PACKET;
 	sll.sll_ifindex = if_nametoindex("nlmon0");
 	sll.sll_protocol = htons(ETH_P_ALL);
+	sll.sll_hatype = ARPHRD_NETLINK;
 
 	ssize_t recvlen;
 	char control[CMSG_SPACE(sizeof(struct timeval))];
@@ -1317,7 +1518,6 @@ capture_nlmon()
 	msg.msg_iovlen = 1;
 	msg.msg_control = control;
 	msg.msg_controllen = sizeof(control);
-
 
 	if (bind(so, (struct sockaddr *) &sll, sizeof(sll)) == -1) {
 		perror("bind error:");
@@ -1340,6 +1540,8 @@ capture_nlmon()
 
 	recvlen = recvmsg(so, &msg, 0);
 	while (recvlen >= 0 && running) {
+
+		struct sockaddr_ll *ll = (struct sockaddr_ll *)msg.msg_name;
 		for (cmsg = CMSG_FIRSTHDR(&msg); cmsg ; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
 			if (cmsg->cmsg_level == PF_LOCAL && cmsg->cmsg_type == SO_TIMESTAMP) {
 				ts = (struct timeval*)CMSG_DATA(cmsg);
@@ -1349,15 +1551,19 @@ capture_nlmon()
 		}
 		if (msg.msg_flags & MSG_TRUNC) {
 			NLOG("frame too large for buffer: trucated");
+		} else if (ll->sll_protocol == 0) {
+			recvlen = mnl_cb_run(buffer, recvlen, 0, 0, netlink_cb, NULL);
+		} else if (ll->sll_protocol == htons(ETH_P_PPPTALK)) {
+			recvlen = mnl_cb_run(buffer, recvlen, 0, 0, ppp_cb, NULL);
 		} else {
-			recvlen = mnl_cb_run(buffer, recvlen, 0, 0, data_cb, NULL);
-			if (recvlen < 0)
-				break;
+			NLOG("protocol %u\n", htons(ll->sll_protocol));
 		}
+		if (recvlen < 0)
+				break;
 		recvlen = recvmsg(so, &msg, 0);
 	}
 	if (recvlen < 0) {
-		NLOG("msg name %s, len %d, msg_flags %d\n", (char *)msg.msg_name, msg.msg_namelen, msg.msg_flags);
+		NLOG("msg len %d, msg_flags %d\n", msg.msg_namelen, msg.msg_flags);
 		NLOG("error: %d recv length %ld\n", errno, recvlen);
 		perror("error");
 		return -1;
